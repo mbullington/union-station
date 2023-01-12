@@ -1,5 +1,3 @@
-export type Scheduler = "balanced" | "optimistic" | "pessimistic";
-
 export type WorkgroupFn<K, V> = (
 	data: K,
 	prev: V | undefined,
