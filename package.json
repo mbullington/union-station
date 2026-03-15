@@ -4,7 +4,6 @@
   "description": "Predictive job scheduler for Web Workers.",
   "main": "dist/index.js",
   "module": "dist/index-esm.js",
-  "typings": "dist/index.d.ts",
   "scripts": {
     "build": "typehead build",
     "watch": "typehead build --watch",
@@ -19,5 +18,27 @@
     "@mapbox/typehead": "^1.2.1",
     "rome": "^11.0.0",
     "typescript": "^4.9.4"
-  }
+  },
+  "type": "commonjs",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mbullington/union-station.git"
+  },
+  "homepage": "https://github.com/mbullington/union-station",
+  "bugs": {
+    "url": "https://github.com/mbullington/union-station/issues"
+  },
+  "keywords": [
+    "workers",
+    "web-workers",
+    "scheduler",
+    "browser",
+    "typescript"
+  ]
 }
