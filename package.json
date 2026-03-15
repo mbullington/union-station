@@ -1,7 +1,7 @@
 {
   "name": "union-station",
-  "version": "1.0.0",
-  "description": "Multi-core job scheduler for web workers.",
+  "version": "0.1.0",
+  "description": "Predictive job scheduler for Web Workers.",
   "main": "dist/index.js",
   "module": "dist/index-esm.js",
   "typings": "dist/index.d.ts",
@@ -10,7 +10,8 @@
     "watch": "typehead build --watch",
     "serve": "typehead serve",
     "types": "tsc -p tsconfig.types.json",
-    "prepare": "npm run types && npm run build"
+    "prepare": "npm run types && npm run build",
+    "test": "npm run types && npm run build && node --test --test-concurrency=1"
   },
   "author": "Michael Bullington",
   "license": "MIT",

@@ -5,27 +5,28 @@ import {
 	UnionWorkerDef,
 	UnionWorkerRequest,
 	UnionWorkerResponse,
+	UnionWorkerSerializedError,
 } from "./types";
 
 import { Completer } from "./util/Completer";
 import { debounceIdleCallback } from "./util/debounceIdleCallback";
 import { arrayMin } from "./util/arrayMin";
 
-interface UnionStationOptions<T extends string | number | symbol> {
+export interface UnionStationOptions<T extends string | number | symbol> {
 	/**
-     * This is the size of each worker's local queue. This is the number of jobs that
-     * can be queued before the worker is forced to wait for the main thread to
-     * process the queue.
-     * 
-     * Default: 8
-     */
+	 * This is the size of each worker's local queue. This is the number of jobs that
+	 * can be queued before the worker is forced to wait for the main thread to
+	 * process the queue.
+	 *
+	 * Default: 8
+	 */
 	localQueueSize?: number;
 	/**
-     * This is the number of workers that will be created. It will never be higher
-     * than {@link navigator.hardwareConcurrency} - 1.
-     * 
-     * Default: 4
-     */
+	 * This is the number of workers that will be created. It will never be higher
+	 * than {@link navigator.hardwareConcurrency} - 1.
+	 *
+	 * Default: 4
+	 */
 	maxWorkers?: number;
 	/**
 	 * Since UnionStation is a predictive scheduler, it estimates how long each
@@ -47,19 +48,16 @@ interface UnionStationOptions<T extends string | number | symbol> {
 }
 
 interface WorkerStatus {
-	// This is the estimated time in milliseconds until the worker will be idle.
-	// This is an estimate, and is not guaranteed to be accurate.
 	estimate: number;
-	// This is the number of jobs that are currently running on the worker.
 	running: number;
 }
 
-// Cached for microscopic performance.
-function getWorkerNumericValue(a: WorkerStatus) {
-	return a.estimate;
+interface IndexedWorkerStatus {
+	idx: number;
+	status: WorkerStatus;
 }
 
-interface UnionStationCallOptions {
+export interface UnionStationCallOptions {
 	/**
 	 * If true, the job will be run next. This is useful for jobs that are
 	 * time-sensitive.
@@ -67,54 +65,36 @@ interface UnionStationCallOptions {
 	priority?: boolean;
 }
 
+function restoreError(error: UnionWorkerSerializedError): Error {
+	const restored = new Error(error.message);
+	restored.name = error.name;
+	if (error.stack) {
+		restored.stack = error.stack;
+	}
+	return restored;
+}
+
 /**
  * {@link UnionStation} creates a pool of union workers that coordinate tasks.
- *
- * @example
- * // Path: worker.ts
- * import { setupWorker } from 'union-station';
- * 
- * // Define a set of jobs
- * export const jobs = setupWorker({
- *    add: (data: number[]) => data.reduce((a, b) => a + b, 0),
- * });
- * 
- * // Path: index.js
- * import { UnionStation } from 'union-station';
- * import type { jobs } from './worker';
- * 
- * const station = new UnionStation<typeof jobs>('worker.js');
- * await station.call("add", [1, 2, 3, 4, 5]); // 15
  */
 export class UnionStation<T extends UnionWorkerDef> {
-	// The maximum number of jobs that can be queued on any given worker.
 	#localQueueSize: number;
-	// The fallback time to use if no snapshot or previous runs are available.
 	#fallbackTime: number;
 
 	#workers: Worker[];
-	// This is the estimated total time each worker will take to be idle in milliseconds.
 	#workerStatus: WorkerStatus[];
 
-	// jobId is incremented for each job, and the promise is stored in the map.
 	#jobId = 0;
-	#jobs: Map<number, Completer<any>> = new Map();
+	#jobs: Map<number, Completer<unknown>> = new Map();
 
-	// These are variables relating to the job system being initialized.
-	#readyCount: number = 0;
+	#readyCount = 0;
 	#isReady: Completer<void> = new Completer();
 	get isReady(): Promise<void> {
 		return this.#isReady.promise;
 	}
 
-	// These are the estimates given for each job type.
 	#estimates: Map<keyof T, { length: number; mean: number }> = new Map();
 	#pendingEstimates: { name: keyof T; dt: number }[] = [];
-
-	// When each local queue runs out of room, we'll push the job to the global
-	// queue.
-	//
-	// Workers will pick these up later when they reflow.
 	#globalQueue: UnionWorkerCallRequest[] = [];
 
 	constructor(
@@ -129,9 +109,14 @@ export class UnionStation<T extends UnionWorkerDef> {
 		this.#localQueueSize = localQueueSize;
 		this.#fallbackTime = fallbackTime;
 
-		// Create workers.
-		const cpuCount = navigator.hardwareConcurrency;
-		const workerCount = Math.min(cpuCount - 1, maxWorkers);
+		const reportedCpuCount = globalThis.navigator?.hardwareConcurrency ?? 1;
+		const cpuCount = Number.isFinite(reportedCpuCount)
+			? Math.max(1, Math.floor(reportedCpuCount))
+			: 1;
+		const workerCount = Math.max(
+			1,
+			Math.min(Math.max(1, cpuCount - 1), Math.max(1, maxWorkers)),
+		);
 
 		this.#workers = new Array(workerCount);
 		this.#workerStatus = new Array(workerCount);
@@ -144,7 +129,7 @@ export class UnionStation<T extends UnionWorkerDef> {
 		}
 
 		for (let i = 0; i < workerCount; i++) {
-			const worker = this.#workers[i] = new Worker(url);
+			const worker = (this.#workers[i] = new Worker(url));
 			const onMessage = this.#onMessage;
 
 			worker.onmessage = function (event: MessageEvent<UnionWorkerResponse>) {
@@ -152,10 +137,9 @@ export class UnionStation<T extends UnionWorkerDef> {
 			};
 		}
 
-		// Pre-populate the estimates with the time snapshot, if available.
 		if (timeSnapshot) {
 			for (const [name, mean] of Object.entries(timeSnapshot)) {
-				this.#estimates.set(name, {
+				this.#estimates.set(name as keyof T, {
 					length: 1,
 					mean,
 				});
@@ -163,9 +147,9 @@ export class UnionStation<T extends UnionWorkerDef> {
 		}
 	}
 
-	// Update our estimates based on prior data.
 	#updateEstimates = debounceIdleCallback(() => {
-		for (const { name, dt } of this.#pendingEstimates) {
+		const pendingEstimates = this.#pendingEstimates.splice(0);
+		for (const { name, dt } of pendingEstimates) {
 			if (!this.#estimates.has(name)) {
 				this.#estimates.set(name, {
 					length: 1,
@@ -175,15 +159,40 @@ export class UnionStation<T extends UnionWorkerDef> {
 			}
 
 			const estimate = this.#estimates.get(name)!;
-
-			// Update mean.
 			estimate.length++;
 			estimate.mean =
 				((estimate.mean * (estimate.length - 1)) + dt) / estimate.length;
 		}
 	});
 
-	// Message received from worker.
+	#completeJob(
+		workerIdx: number,
+		name: string,
+		id: number,
+		dt: number,
+		settle: (completer: Completer<unknown>) => void,
+	) {
+		const completer = this.#jobs.get(id);
+		if (completer) {
+			this.#jobs.delete(id);
+			settle(completer);
+		}
+
+		const status = this.#workerStatus[workerIdx];
+		status.running = Math.max(0, status.running - 1);
+		status.estimate = Math.max(
+			0,
+			status.estimate - this.#getEstimate(name as keyof T),
+		);
+
+		this.#pendingEstimates.push({ name: name as keyof T, dt });
+		this.#updateEstimates();
+
+		if (!status.running && this.#globalQueue.length) {
+			this.#reflow();
+		}
+	}
+
 	#onMessage = (
 		workerIdx: number,
 		event: MessageEvent<UnionWorkerResponse>,
@@ -191,7 +200,6 @@ export class UnionStation<T extends UnionWorkerDef> {
 		const { data } = event;
 		switch (data.type) {
 			case "setup": {
-				// Worker is ready, send the ack and increment the ready count.
 				const worker = this.#workers[workerIdx];
 				worker.postMessage(<UnionWorkerRequest>{
 					type: "setup_ack",
@@ -200,45 +208,27 @@ export class UnionStation<T extends UnionWorkerDef> {
 
 				this.#readyCount++;
 				if (this.#readyCount === this.#workers.length) {
-					// All workers are ready, resolve the isReady promise.
 					this.#isReady.resolve();
 				}
-				break;
+				return;
 			}
 			case "done": {
-				// Job is done, resolve the promise.
-				const { id, name, result, dt } = data;
-
-				const completer = this.#jobs.get(id);
-				if (completer) {
-					this.#jobs.delete(id);
-					completer.resolve(result);
-				}
-
-				// Modify worker status.
-				const status = this.#workerStatus[workerIdx];
-				status.running--;
-				status.estimate -= this.#getEstimate(name);
-
-				// Recalculate the worker's time estimate.
-				this.#pendingEstimates.push({ name, dt });
-				this.#updateEstimates();
-
-				// Reflow if necessary.
-				if (!status.running && this.#globalQueue.length) {
-					this.#reflow();
-				}
+				this.#completeJob(workerIdx, data.name, data.id, data.dt, (completer) => {
+					completer.resolve(data.result);
+				});
+				return;
+			}
+			case "error": {
+				this.#completeJob(workerIdx, data.name, data.id, data.dt, (completer) => {
+					completer.reject(restoreError(data.error));
+				});
+				return;
 			}
 			default:
-				break;
+				return;
 		}
 	};
 
-	/**
-	 * Reflows all of the jobs in the global queue into the workers, if possible.
-	 *
-	 * TODO: There's probably a lot of room for speed improvements here.
-	 */
 	#reflow = debounceIdleCallback(() => {
 		if (!this.#globalQueue.length) {
 			return;
@@ -265,29 +255,23 @@ export class UnionStation<T extends UnionWorkerDef> {
 	}
 
 	#schedule(call: UnionWorkerCallRequest, priority?: boolean): boolean {
-		// This looks somewhat strange, but if priority,
-		// we don't care about the local queue size.
-		const eligibleWorkers = priority ? (
-			this.#workerStatus
-		) : this.#workerStatus.filter(
-			({ running }) => running < this.#localQueueSize,
-		);
+		const eligibleWorkers = this.#workerStatus
+			.map<IndexedWorkerStatus>((status, idx) => ({ idx, status }))
+			.filter(({ status }) => priority || status.running < this.#localQueueSize);
 
-		// Decline if false, push to global queue.
 		if (!eligibleWorkers.length) {
 			return false;
 		}
 
-		const { item: status, idx: workerIdx } = arrayMin(
+		const { item } = arrayMin(
 			eligibleWorkers,
-			getWorkerNumericValue,
+			({ status }) => status.estimate,
 		)!;
+		const { idx: workerIdx, status } = item;
 
-		// Update worker status.
 		status.running++;
-		status.estimate += this.#getEstimate(call.name);
+		status.estimate += this.#getEstimate(call.name as keyof T);
 
-		// Send worker message.
 		const worker = this.#workers[workerIdx];
 		if (priority) {
 			worker.postMessage(<UnionWorkerRequest>{ type: "call_priority", call });
@@ -302,67 +286,55 @@ export class UnionStation<T extends UnionWorkerDef> {
 		name: Name,
 		data: Parameters<T[Name]>[0],
 		options?: UnionStationCallOptions,
-	): Promise<ReturnType<T[Name]>>;
+	): Promise<Awaited<ReturnType<T[Name]>>>;
 
 	call<Name extends keyof OnlyWorkgroupFn<T>>(
 		name: Name,
 		data: Parameters<T[Name]>[0],
 		workgroupLength: number,
 		options?: UnionStationCallOptions,
-	): Promise<ReturnType<T[Name]>>;
+	): Promise<Awaited<ReturnType<T[Name]>>>;
 
 	async call<Name extends keyof T>(
 		name: Name,
 		data: Parameters<T[Name]>[0],
 		workgroupLengthOrOptions?: number | UnionStationCallOptions,
 		optionsOpt?: UnionStationCallOptions,
-	): Promise<ReturnType<T[Name]>> {
+	): Promise<Awaited<ReturnType<T[Name]>>> {
 		const hasWorkgroupLength = typeof workgroupLengthOrOptions === "number";
-		// Deswizzle the options.
-		const workgroupLength = hasWorkgroupLength ? workgroupLengthOrOptions : 0;
+		const workgroupLength = hasWorkgroupLength
+			? Math.max(0, workgroupLengthOrOptions)
+			: 0;
 		const { priority } =
 			(hasWorkgroupLength ? optionsOpt : workgroupLengthOrOptions) ?? {};
 
-		// Wait for scheduler to be ready.
 		if (!this.#isReady.isCompleted) {
 			await this.isReady;
 		}
 
 		const jobId = this.#jobId++;
-		const completer = new Completer<ReturnType<T[Name]>>();
+		const completer = new Completer<Awaited<ReturnType<T[Name]>>>();
 		const call = <UnionWorkerCallRequest>{
 			type: "call",
 			id: jobId,
-			name,
+			name: String(name),
 			data,
-			workgroupLength, // This is always filled to zero to maintain the same shape.
+			workgroupLength,
 		};
 
-		this.#jobs.set(jobId, completer);
+		this.#jobs.set(jobId, completer as unknown as Completer<unknown>);
 		if (!this.#schedule(call, priority)) {
-			// No worker was available, push to global queue.
 			this.#globalQueue.push(call);
 		}
 
 		return completer.promise;
 	}
 
-	/**
-	 * Returns a snapshot of the current time estimates for each job type, used
-	 * for cold start prediction.
-	 *
-	 * Can be persisted to local storage and passed to the scheduler on
-	 * initialization.
-	 *
-	 * {@link UnionStationOptions.timeSnapshot}
-	 */
 	getTimeSnapshot(): Record<keyof T, number> {
-		const keys = this.#estimates.keys();
-		const snapshot: Record<keyof T, number> = {} as any;
-		for (const key of keys) {
+		const snapshot = {} as Record<keyof T, number>;
+		for (const key of this.#estimates.keys()) {
 			snapshot[key] = this.#estimates.get(key)!.mean;
 		}
-
 		return snapshot;
 	}
 }
