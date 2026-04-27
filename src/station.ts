@@ -29,6 +29,12 @@ export interface UnionStationOptions<T extends string | number | symbol> {
 	 */
 	maxWorkers?: number;
 	/**
+	 * Options passed through when each Web Worker is created.
+	 *
+	 * For module workers, pass `{ type: "module" }`.
+	 */
+	workerOptions?: WorkerOptions;
+	/**
 	 * Since UnionStation is a predictive scheduler, it estimates how long each
 	 * job will take to run.
 	 *
@@ -98,10 +104,11 @@ export class UnionStation<T extends UnionWorkerDef> {
 	#globalQueue: UnionWorkerCallRequest[] = [];
 
 	constructor(
-		url: string,
+		url: string | URL,
 		{
 			localQueueSize = 8,
 			maxWorkers = 4,
+			workerOptions,
 			timeSnapshot,
 			fallbackTime = 10,
 		}: UnionStationOptions<keyof T> = {},
@@ -118,18 +125,14 @@ export class UnionStation<T extends UnionWorkerDef> {
 			Math.min(Math.max(1, cpuCount - 1), Math.max(1, maxWorkers)),
 		);
 
-		this.#workers = new Array(workerCount);
-		this.#workerStatus = new Array(workerCount);
+		this.#workers = [];
+		this.#workerStatus = Array.from({ length: workerCount }, () => ({
+			estimate: 0,
+			running: 0,
+		}));
 
 		for (let i = 0; i < workerCount; i++) {
-			this.#workerStatus[i] = {
-				estimate: 0,
-				running: 0,
-			};
-		}
-
-		for (let i = 0; i < workerCount; i++) {
-			const worker = (this.#workers[i] = new Worker(url));
+			const worker = (this.#workers[i] = new Worker(url, workerOptions));
 			const onMessage = this.#onMessage;
 
 			worker.onmessage = function (event: MessageEvent<UnionWorkerResponse>) {

@@ -3,11 +3,6 @@ Union Station
 
 ## Status
 
-`union-station` is now a working **0.x** library for scheduling jobs across browser Web Workers.
-It is still early software: the core scheduler, worker runtime, priority dispatch, workload chunking,
-error propagation, and snapshot-based prediction are implemented, but the public API should still be
-considered pre-1.0 and may change.
-
 `union-station` is a multithreaded job scheduler for JavaScript, implemented
 using [Web workers](https://developer.mozilla.org/en-US/docs/Web/API/Web_Workers_API/Using_web_workers).
 
@@ -46,6 +41,10 @@ import { UnionStation } from 'union-station';
 import type { jobs } from './worker';
 
 const station = new UnionStation<typeof jobs>('worker.js');
+// For bundlers/module workers, use:
+// const station = new UnionStation<typeof jobs>(new URL('./worker.ts', import.meta.url), {
+//   workerOptions: { type: 'module' },
+// });
 
 await station.call('add', [1, 2, 3, 4, 5]); // 15
 await station.call('doubleLater', 5); // 10

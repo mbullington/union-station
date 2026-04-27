@@ -1,6 +1,6 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { UnionStation, setupWorker } = require('../dist/index.js');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { UnionStation, setupWorker } from '../dist/index.js';
 
 const workerScripts = new Map();
 const workerRuntimeKey = Symbol.for('union-station.worker-runtime');
@@ -135,6 +135,36 @@ test('runs sync and async jobs end-to-end and propagates worker errors', async (
 		assert.equal(await station.call('add', [1, 2, 3, 4]), 10);
 		assert.equal(await station.call('asyncDouble', 9), 18);
 		await assert.rejects(() => station.call('explode', undefined), /boom/);
+	} finally {
+		restore();
+	}
+});
+
+test('setupWorker only installs one runtime per worker global', async () => {
+	FakeWorker.instances.length = 0;
+	workerScripts.clear();
+	let runs = 0;
+	registerWorkerScript('idempotent-worker.js', () => {
+		const jobs = {
+			ping: () => {
+				runs++;
+				return 'pong';
+			},
+		};
+		setupWorker(jobs);
+		setupWorker(jobs);
+	});
+
+	const restore = patchGlobals({
+		Worker: FakeWorker,
+		navigator: { hardwareConcurrency: 2 },
+	});
+
+	try {
+		const station = new UnionStation('idempotent-worker.js', { maxWorkers: 1 });
+		assert.equal(await station.call('ping', undefined), 'pong');
+		await nextTick();
+		assert.equal(runs, 1);
 	} finally {
 		restore();
 	}

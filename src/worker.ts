@@ -289,8 +289,9 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
  */
 export function setupWorker<T extends UnionWorkerDef>(def: T): T {
 	const scope = getWorkerRuntimeScope();
-	if (scope && !(scope as unknown as Record<PropertyKey, unknown>)[WORKER_RUNTIME_KEY]) {
-		(scope as unknown as Record<PropertyKey, unknown>)[WORKER_RUNTIME_KEY] = true;
+	const runtimeGlobal = globalThis as Record<PropertyKey, unknown>;
+	if (scope && !runtimeGlobal[WORKER_RUNTIME_KEY]) {
+		runtimeGlobal[WORKER_RUNTIME_KEY] = true;
 		new UnionWorkerRuntime(scope, def);
 	}
 

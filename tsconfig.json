@@ -1,13 +1,14 @@
 {
   "compilerOptions": {
     "target": "esnext",
-    "module": "commonjs",
-    "jsx": "react",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "declaration": true,
-    "outDir": "lib",
+    "declarationMap": false,
+    "outDir": "dist",
     "strict": true,
-    "moduleResolution": "node",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true
-  }
+  },
+  "include": ["src/**/*"]
 }

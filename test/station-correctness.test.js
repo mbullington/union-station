@@ -1,6 +1,6 @@
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const { UnionStation } = require('../dist/index.js');
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { UnionStation } from '../dist/index.js';
 
 function patchGlobals(patches) {
 	const originals = new Map();

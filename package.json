@@ -2,24 +2,30 @@
   "name": "union-station",
   "version": "0.1.0",
   "description": "Predictive job scheduler for Web Workers.",
-  "main": "dist/index.js",
-  "module": "dist/index-esm.js",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "build": "typehead build",
-    "watch": "typehead build --watch",
-    "serve": "typehead serve",
-    "types": "tsc -p tsconfig.types.json",
-    "prepare": "npm run types && npm run build",
-    "test": "npm run types && npm run build && node --test --test-concurrency=1"
+    "build": "tsdown",
+    "watch": "npm run build -- --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "oxlint src test tsdown.config.ts",
+    "prepare": "npm run build",
+    "test": "npm run build && node --test --test-concurrency=1",
+    "check": "npm run lint && npm run typecheck && npm test"
   },
   "author": "Michael Bullington",
   "license": "MIT",
   "devDependencies": {
-    "@mapbox/typehead": "^1.2.1",
-    "rome": "^11.0.0",
-    "typescript": "^4.9.4"
+    "oxlint": "^1.61.0",
+    "tsdown": "^0.21.10",
+    "typescript": "^5.9.3"
   },
-  "type": "commonjs",
+  "type": "module",
   "types": "dist/index.d.ts",
   "files": [
     "dist",
