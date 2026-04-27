@@ -107,6 +107,88 @@ test('scheduler keeps original worker indices when filtering eligible workers', 
 	}
 });
 
+test('scheduler accounts for elapsed time when choosing a worker', async () => {
+	ProbeWorker.instances.length = 0;
+	ProbeWorker.handler = null;
+	let clock = 0;
+
+	const restore = patchGlobals({
+		Worker: ProbeWorker,
+		navigator: { hardwareConcurrency: 3 },
+		performance: { now: () => clock },
+	});
+
+	try {
+		const station = new UnionStation('probe-worker.js', {
+			maxWorkers: 2,
+			timeSnapshot: {
+				long: 100,
+				short: 20,
+			},
+		});
+		await station.isReady;
+
+		station.call('long', 'first');
+		clock = 90;
+		station.call('short', 'second');
+		station.call('short', 'third');
+
+		assert.deepEqual(
+			ProbeWorker.instances.map((worker) => worker.messages.map((message) => message.name)),
+			[['long', 'short'], ['short']],
+		);
+	} finally {
+		restore();
+	}
+});
+
+test('scheduler adjusts worker availability using the estimate assigned at dispatch', async () => {
+	ProbeWorker.instances.length = 0;
+	ProbeWorker.handler = null;
+	let clock = 0;
+
+	const restore = patchGlobals({
+		Worker: ProbeWorker,
+		navigator: { hardwareConcurrency: 3 },
+		performance: { now: () => clock },
+	});
+
+	try {
+		const station = new UnionStation('probe-worker.js', {
+			maxWorkers: 2,
+			timeSnapshot: { task: 10 },
+		});
+		await station.isReady;
+
+		const first = station.call('task', 'first');
+		const second = station.call('task', 'second');
+		station.call('task', 'third');
+
+		const firstWorker = ProbeWorker.instances[0];
+		const secondWorker = ProbeWorker.instances[1];
+		assert.deepEqual(
+			ProbeWorker.instances.map((worker) => worker.messages.map((message) => message.data)),
+			[['first', 'third'], ['second']],
+		);
+
+		secondWorker.respond(secondWorker.messages[0], { dt: 100 });
+		assert.equal(await second, 'second');
+		await nextTick();
+
+		firstWorker.respond(firstWorker.messages[0], { dt: 10 });
+		assert.equal(await first, 'first');
+
+		station.call('task', 'fourth');
+
+		assert.deepEqual(
+			ProbeWorker.instances.map((worker) => worker.messages.map((message) => message.data)),
+			[['first', 'third'], ['second', 'fourth']],
+		);
+	} finally {
+		restore();
+	}
+});
+
 test('time snapshots use each completion once when updating the running mean', async () => {
 	ProbeWorker.instances.length = 0;
 	ProbeWorker.handler = (worker, message) => {

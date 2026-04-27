@@ -54,7 +54,11 @@ export interface UnionStationOptions<T extends string | number | symbol> {
 }
 
 interface WorkerStatus {
-	estimate: number;
+	/**
+	 * Absolute timestamp, in the main thread's clock, when this worker is
+	 * predicted to become idle.
+	 */
+	availableAt: number;
 	running: number;
 }
 
@@ -69,6 +73,10 @@ export interface UnionStationCallOptions {
 	 * time-sensitive.
 	 */
 	priority?: boolean;
+}
+
+function now(): number {
+	return globalThis.performance?.now() ?? Date.now();
 }
 
 function restoreError(error: UnionWorkerSerializedError): Error {
@@ -92,6 +100,7 @@ export class UnionStation<T extends UnionWorkerDef> {
 
 	#jobId = 0;
 	#jobs: Map<number, Completer<unknown>> = new Map();
+	#scheduledEstimates: Map<number, number> = new Map();
 
 	#readyCount = 0;
 	#isReady: Completer<void> = new Completer();
@@ -127,7 +136,7 @@ export class UnionStation<T extends UnionWorkerDef> {
 
 		this.#workers = [];
 		this.#workerStatus = Array.from({ length: workerCount }, () => ({
-			estimate: 0,
+			availableAt: now(),
 			running: 0,
 		}));
 
@@ -181,12 +190,21 @@ export class UnionStation<T extends UnionWorkerDef> {
 			settle(completer);
 		}
 
+		const completedAt = now();
+		const scheduledEstimate =
+			this.#scheduledEstimates.get(id) ?? this.#getEstimate(name as keyof T);
+		this.#scheduledEstimates.delete(id);
+
 		const status = this.#workerStatus[workerIdx];
 		status.running = Math.max(0, status.running - 1);
-		status.estimate = Math.max(
-			0,
-			status.estimate - this.#getEstimate(name as keyof T),
-		);
+		if (status.running) {
+			status.availableAt = Math.max(
+				completedAt,
+				status.availableAt + dt - scheduledEstimate,
+			);
+		} else {
+			status.availableAt = completedAt;
+		}
 
 		this.#pendingEstimates.push({ name: name as keyof T, dt });
 		this.#updateEstimates();
@@ -257,7 +275,12 @@ export class UnionStation<T extends UnionWorkerDef> {
 		return estimate.mean;
 	}
 
+	#getRemainingEstimate(status: WorkerStatus, time = now()): number {
+		return Math.max(0, status.availableAt - time);
+	}
+
 	#schedule(call: UnionWorkerCallRequest, priority?: boolean): boolean {
+		const scheduledAt = now();
 		const eligibleWorkers = this.#workerStatus
 			.map<IndexedWorkerStatus>((status, idx) => ({ idx, status }))
 			.filter(({ status }) => priority || status.running < this.#localQueueSize);
@@ -266,14 +289,16 @@ export class UnionStation<T extends UnionWorkerDef> {
 			return false;
 		}
 
-		const { item } = arrayMin(
-			eligibleWorkers,
-			({ status }) => status.estimate,
+		const { item } = arrayMin(eligibleWorkers, ({ status }) =>
+			this.#getRemainingEstimate(status, scheduledAt),
 		)!;
 		const { idx: workerIdx, status } = item;
+		const scheduledEstimate = this.#getEstimate(call.name as keyof T);
 
 		status.running++;
-		status.estimate += this.#getEstimate(call.name as keyof T);
+		status.availableAt =
+			Math.max(scheduledAt, status.availableAt) + scheduledEstimate;
+		this.#scheduledEstimates.set(call.id, scheduledEstimate);
 
 		const worker = this.#workers[workerIdx];
 		if (priority) {

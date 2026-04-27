@@ -140,6 +140,43 @@ test('runs sync and async jobs end-to-end and propagates worker errors', async (
 	}
 });
 
+test('worker timings exclude time spent waiting in the local queue', async () => {
+	FakeWorker.instances.length = 0;
+	workerScripts.clear();
+	let clock = 0;
+
+	registerWorkerScript('timed-worker.js', () => {
+		setupWorker({
+			work: () => {
+				clock += 10;
+				return clock;
+			},
+		});
+	});
+
+	const restore = patchGlobals({
+		Worker: FakeWorker,
+		navigator: { hardwareConcurrency: 2 },
+		performance: { now: () => clock },
+	});
+
+	try {
+		const station = new UnionStation('timed-worker.js', { maxWorkers: 1 });
+		await station.isReady;
+
+		const first = station.call('work', undefined);
+		const second = station.call('work', undefined);
+
+		assert.equal(await first, 10);
+		assert.equal(await second, 20);
+		await nextTick();
+
+		assert.equal(station.getTimeSnapshot().work, 10);
+	} finally {
+		restore();
+	}
+});
+
 test('setupWorker only installs one runtime per worker global', async () => {
 	FakeWorker.instances.length = 0;
 	workerScripts.clear();

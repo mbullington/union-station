@@ -24,7 +24,7 @@ interface WorkerRuntimeScope {
 
 interface PendingCall {
 	call: UnionWorkerCallRequest;
-	startedAt: number;
+	runDuration: number;
 	prev: unknown;
 	workgroupStart: number;
 }
@@ -135,7 +135,7 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
 	#enqueue(call: UnionWorkerCallRequest, priority: boolean) {
 		const entry: PendingCall = {
 			call,
-			startedAt: now(),
+			runDuration: 0,
 			prev: undefined,
 			workgroupStart: 0,
 		};
@@ -192,7 +192,7 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
 							name: "Error",
 							message: `Unknown worker job: ${pending.call.name}`,
 						},
-						dt: now() - pending.startedAt,
+						dt: pending.runDuration,
 					});
 					continue;
 				}
@@ -200,13 +200,19 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
 				try {
 					if (!pending.call.workgroupLength) {
 						const oneShotFn = fn as (data: unknown) => unknown;
-						const result = await oneShotFn(pending.call.data);
+						const startedAt = now();
+						let result: unknown;
+						try {
+							result = await oneShotFn(pending.call.data);
+						} finally {
+							pending.runDuration += now() - startedAt;
+						}
 						this.#scope.postMessage({
 							type: "done",
 							id: pending.call.id,
 							name: pending.call.name,
 							result,
-							dt: now() - pending.startedAt,
+							dt: pending.runDuration,
 						});
 						continue;
 					}
@@ -223,12 +229,17 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
 						workgroupStart: number,
 						workgroupEnd: number,
 					) => unknown;
-					pending.prev = await workgroupFn(
-						pending.call.data,
-						pending.prev,
-						pending.workgroupStart,
-						workgroupEnd,
-					);
+					const startedAt = now();
+					try {
+						pending.prev = await workgroupFn(
+							pending.call.data,
+							pending.prev,
+							pending.workgroupStart,
+							workgroupEnd,
+						);
+					} finally {
+						pending.runDuration += now() - startedAt;
+					}
 					pending.workgroupStart = workgroupEnd;
 
 					if (pending.workgroupStart >= pending.call.workgroupLength) {
@@ -237,7 +248,7 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
 							id: pending.call.id,
 							name: pending.call.name,
 							result: pending.prev,
-							dt: now() - pending.startedAt,
+							dt: pending.runDuration,
 						});
 						continue;
 					}
@@ -251,7 +262,7 @@ class UnionWorkerRuntime<T extends UnionWorkerDef> {
 						id: pending.call.id,
 						name: pending.call.name,
 						error: serializeError(error),
-						dt: now() - pending.startedAt,
+						dt: pending.runDuration,
 					});
 				}
 			}
